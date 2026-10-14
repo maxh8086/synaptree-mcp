@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "synaptree": {
+      "command": "node",
+      "args": ["src/launcher.js"],
+      "cwd": "."
+    }
+  }
+}

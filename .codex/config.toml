@@ -1,0 +1,3 @@
+[mcp_servers.synaptree]
+command = "node"
+args = ["src/launcher.js"]

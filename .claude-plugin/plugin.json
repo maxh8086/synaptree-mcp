@@ -1,0 +1,11 @@
+{
+  "name": "synaptree",
+  "version": "1.0.0",
+  "description": "Synaptree code-graph MCP server. Starts the Docker Compose stack on connect and stops it when the last client exits.",
+  "author": {
+    "name": "Vaibhav Pavtekar"
+  },
+  "repository": "https://github.com/maxh8086/synaptree-mcp",
+  "license": "Apache-2.0",
+  "keywords": ["mcp", "code-graph", "docker"]
+}
