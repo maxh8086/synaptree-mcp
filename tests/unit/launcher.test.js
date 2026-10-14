@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { buildComposeArgs, pidAlive, readLiveLeases } from '../../src/launcher.js';
+import { buildComposeArgs, pidAlive, readLiveLeases, acquireLock, releaseLock } from '../../src/launcher.js';
 
 const FILE = '/repo/docker-compose.yml';
 
@@ -55,4 +55,45 @@ test('lease filename pattern matches the pid lease and round-trips', () => {
 
 test('pidAlive reports the current process as alive', () => {
   assert.equal(pidAlive(process.pid), true);
+});
+
+test('acquireLock times out while a live owner holds the lock', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-test-'));
+  try {
+    const lockDir = path.join(dir, 'lock');
+    acquireLock(lockDir);
+    assert.throws(() => acquireLock(lockDir, { timeoutMs: 200 }), /launcher lock timeout/);
+    releaseLock(lockDir);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('releaseLock lets the lock be acquired again', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-test-'));
+  try {
+    const lockDir = path.join(dir, 'lock');
+    acquireLock(lockDir);
+    releaseLock(lockDir);
+    assert.doesNotThrow(() => acquireLock(lockDir));
+    releaseLock(lockDir);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('acquireLock takes over a lock whose owner is dead', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-test-'));
+  try {
+    const lockDir = path.join(dir, 'lock');
+    fs.mkdirSync(lockDir);
+    fs.writeFileSync(path.join(lockDir, 'owner.json'), JSON.stringify({ pid: 999999 }));
+    acquireLock(lockDir, { isAlive: () => false, timeoutMs: 1000 });
+    const owner = JSON.parse(fs.readFileSync(path.join(lockDir, 'owner.json'), 'utf8'));
+    assert.equal(fs.existsSync(path.join(lockDir, 'owner.json')), true);
+    assert.equal(owner.pid, process.pid);
+    releaseLock(lockDir);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

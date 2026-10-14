@@ -1,0 +1,9 @@
+{
+  "servers": {
+    "synaptree": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${workspaceFolder}/src/launcher.js"]
+    }
+  }
+}
