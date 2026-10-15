@@ -316,3 +316,11 @@ npm test      # node --test tests/unit/*.test.js
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE).
+
+## Support
+
+If synaptree-mcp saves you time, you can [buy me a coffee](https://buymeacoffee.com/maxh8086).
+
+<a href="https://buymeacoffee.com/maxh8086"><img src="docs/buymeacoffee-qr.png" alt="Buy Me a Coffee QR code" width="220"></a>
+
+https://buymeacoffee.com/maxh8086
