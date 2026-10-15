@@ -75,10 +75,17 @@ SYNAPTREE_DATA_DIR             ./data                   Settings, usage and save
 SYNAPTREE_GRAMMARS_DIR         (none)                   Extra tree-sitter-<name>.wasm grammars
 SYNAPTREE_SUMMARIZE_ON_INDEX   off                      Local LLM writes summaries after indexing
 SYNAPTREE_SUMMARIZE_LIMIT      25                       Max symbols summarised per run
+SYNAPTREE_IGNORE              (none)                   Extra ignore entries, comma separated (see below)
 EMBEDDINGS_URL / _API_KEY      (none)                   Optional embeddings endpoint
 EMBEDDINGS_MODEL               text-embedding-3-small   Embedding model name
 WORKSPACE_DIR (compose)        (set in .env)            Host folder mounted read-only at /workspace
 ```
+
+### Ignore list and staleness
+
+Indexing skips `node_modules`, `.git`, `.claude`, `.claude/worktrees`, `.worktrees`, build output and virtualenvs by default. `SYNAPTREE_IGNORE` appends more entries: a bare name (`vendor`) matches a directory anywhere, a root-relative path (`apps/legacy/generated`) matches that one directory. Any directory holding a `.git` *file* (a linked worktree or submodule) is a separate checkout and is skipped too.
+
+Re-running `index_repository` is incremental and prunes: files that were deleted, renamed or newly ignored lose their nodes, and Folder nodes with no remaining files are removed. `index_status` returns `head_sha`, `index_sha` and `head_changed`; `stale` is true when HEAD moved since the last index (or the project has not synced for the stale period). Re-run `index_repository` (or the git hooks in `scripts/git-hooks`) to refresh. Index from the main checkout path, not a worktree.
 
 Local model for `SYNAPTREE_SUMMARIZE_ON_INDEX`: in a 36-answer screen of nine Ollama models, `llama3.2:3b-16k` scored 28/36 at 0.8 s/task, one answer behind `llama3.1:8b` (29/36, 6.1 s/task); models under 3B failed every summary task. See [docs/BENCHMARK.md](docs/BENCHMARK.md#local-model-for-summaries-and-review-thinker-role).
 

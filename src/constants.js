@@ -47,7 +47,7 @@ export const EMBEDDING_DIMS = 1536;
 
 export const DEFAULT_IGNORE_DIRS = [
   'node_modules', '.git', 'dist', 'build', '.venv', 'venv', '__pycache__', 'target',
-  '.claude', '.next', '.nuxt', 'coverage', '.idea', '.vscode', '.pytest_cache', '.mypy_cache',
+  '.claude','.claude/worktrees','.worktrees', '.next', '.nuxt', 'coverage', '.idea', '.vscode', '.pytest_cache', '.mypy_cache',
   '.gradle', 'bin/Debug', 'obj',
 ];
 

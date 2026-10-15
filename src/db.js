@@ -162,6 +162,13 @@ export class Db {
     return c;
   }
 
+  // Remove Folder nodes whose qualified_name is not in `keep` (their files were deleted or renamed away).
+  async pruneFolders(t, keep) {
+    return this.run(
+      `MATCH (n:Folder {user_id:$u, repo_name:$r}) WHERE NOT n.qualified_name IN $keep DETACH DELETE n`,
+      { u: t.user_id, r: t.repo_name, keep: [...keep] }, { write: true });
+  }
+
   async fileHashes(t) {
     const rows = await this.run(`MATCH (f:File {user_id:$u, repo_name:$r}) RETURN f.file_path AS p, f.sha256 AS h`, { u: t.user_id, r: t.repo_name });
     return new Map(rows.map((x) => [x.p, x.h]));

@@ -129,7 +129,7 @@ export function buildTools() {
       const st = await fs.stat(root).catch(() => null);
       if (!st?.isDirectory()) throw new HttpError(400, `root_path is not a directory: ${root}`);
       const t = tenant(ctx, a.project);
-      const stats = await indexRepository(ctx.db, t, a.project, root, { force: a.force, grammarsDir: ctx.cfg.grammarsDir, embed: makeEmbedder(ctx.cfg, ctx.db) });
+      const stats = await indexRepository(ctx.db, t, a.project, root, { force: a.force, grammarsDir: ctx.cfg.grammarsDir, embed: makeEmbedder(ctx.cfg, ctx.db), ignore: [...DEFAULT_IGNORE_DIRS, ...(ctx.cfg.ignore ?? [])] });
       if (summarizeEnabled(ctx.cfg)) {
         stats.summaries = await summarizeMissing(ctx, a.project, { limit: ctx.cfg.summarizeOnIndex.limit }).catch((e) => ({ error: e.message }));
       }
@@ -142,7 +142,12 @@ export function buildTools() {
     async (ctx, a) => {
       const [c] = await ctx.db.run(`MATCH (n:${ROOT_LABEL} {user_id:$u, repo_name:$r}) RETURN count(n) AS nodes, sum(CASE WHEN n:File THEN 1 ELSE 0 END) AS files`, { u: ctx.tenant.user_id, r: a.project });
       const m = meta(ctx, a.project);
-      return { project: a.project, ...c, root: m.root ?? null, last_sync: m.last_sync ?? null, ...staleInfo(m), status: c.nodes ? 'indexed' : 'empty' };
+      const info = staleInfo(m);
+      // HEAD moved since the last index (commit, checkout, rename, delete) means the graph may hold dead paths.
+      const head_sha = m.root ? await headSha(m.root) : null;
+      const index_sha = m.index_sha ?? null;
+      const head_changed = !!(head_sha && index_sha && head_sha !== index_sha);
+      return { project: a.project, ...c, root: m.root ?? null, last_sync: m.last_sync ?? null, ...info, head_sha, index_sha, head_changed, stale: info.stale || head_changed, status: c.nodes ? 'indexed' : 'empty' };
     });
 
   add('list_projects', 'List indexed projects with node counts, last sync and stale flag.', {}, async (ctx) => ({ projects: await listProjectRows(ctx) }));

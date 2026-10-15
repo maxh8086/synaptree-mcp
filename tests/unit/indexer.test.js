@@ -38,3 +38,60 @@ test('indexes new files, links calls across files, skips unchanged on re-run', a
 });
 
 test('sha256 is stable', () => { assert.equal(sha256('x'), sha256('x')); });
+
+// --- ignore list, worktrees and pruning ---------------------------------------------------------
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { indexRepository, walk } from '../../src/indexer.js';
+
+const pruningDb = () => {
+  const db = fakeDb();
+  db.folders = new Set();
+  const base = db.replaceFile;
+  db.replaceFile = async (t, rel, nodes) => { await base(t, rel, nodes); for (const n of nodes) if (n.label === 'Folder') db.folders.add(n.qualified_name); };
+  db.deleteFile = async (t, rel) => { db.files.delete(rel); };
+  db.pruneFolders = async (t, keep) => { for (const q of [...db.folders]) if (!keep.has(q)) db.folders.delete(q); };
+  db.deleteByPrefix = async (t, prefix) => {
+    for (const [p] of [...db.files]) if (p === prefix || p.startsWith(prefix + '/')) db.files.delete(p);
+    for (const q of [...db.folders]) if (q.startsWith(`proj.${prefix.replace(/\//g, '.')}`)) db.folders.delete(q);
+  };
+  return db;
+};
+const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'idx-'));
+const put = (root, rel, body) => { const f = path.join(root, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, body); };
+
+test('(a) .claude/worktrees and nested worktrees yield no nodes', async () => {
+  const root = tmp();
+  put(root, 'src/a.js', 'export function a() {}\n');
+  put(root, '.claude/worktrees/x1/src/a.js', 'export function a() {}\n');
+  put(root, 'other/wt/.git', 'gitdir: /somewhere\n');
+  put(root, 'other/wt/b.js', 'export function b() {}\n');
+  const db = pruningDb();
+  // Simulate stale data from an earlier run that did index the worktree.
+  db.files.set('.claude/worktrees/x1/old.js', { hash: 'h', nodes: [] });
+  db.folders.add('proj..claude.worktrees');
+  const r = await indexRepository(db, T, 'proj', root, { ignore: ['node_modules', '.claude/worktrees', '.git'] });
+  assert.deepEqual([...db.files.keys()].sort(), ['src/a.js']);
+  assert.ok(![...db.folders].some((q) => q.includes('worktrees') || q.includes('other')));
+  assert.ok(r.removed >= 1);
+  const seen = []; for await (const f of walk(root)) seen.push(path.relative(root, f).split(path.sep).join('/'));
+  assert.deepEqual(seen.sort(), ['src/a.js']);
+});
+
+test('(b) renamed file: old qualified_name gone, new present, orphan folder pruned', async () => {
+  const root = tmp();
+  put(root, 'gateway/compose.js', 'export function compose() {}\n');
+  const db = pruningDb();
+  await indexRepository(db, T, 'proj', root);
+  assert.ok(db.files.has('gateway/compose.js'));
+  assert.ok(db.folders.has('proj.gateway'));
+  fs.mkdirSync(path.join(root, 'router'));
+  fs.renameSync(path.join(root, 'gateway/compose.js'), path.join(root, 'router/compose.js'));
+  fs.rmdirSync(path.join(root, 'gateway'));
+  await indexRepository(db, T, 'proj', root);
+  assert.ok(!db.files.has('gateway/compose.js'));
+  assert.ok(db.files.has('router/compose.js'));
+  assert.ok(!db.folders.has('proj.gateway'));
+  assert.ok(db.folders.has('proj.router'));
+});

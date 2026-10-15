@@ -33,6 +33,8 @@ export function loadConfig(env = process.env) {
     },
     dataDir: env.SYNAPTREE_DATA_DIR || './data',
     grammarsDir: env.SYNAPTREE_GRAMMARS_DIR || undefined,
+    // Extra ignore entries (comma separated): bare dir names or root-relative paths.
+    ignore: (env.SYNAPTREE_IGNORE || '').split(',').map((x) => x.trim()).filter(Boolean),
     workspaceRoot: env.SYNAPTREE_WORKSPACE_ROOT || process.cwd(),
   };
 }

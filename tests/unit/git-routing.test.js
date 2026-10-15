@@ -171,3 +171,24 @@ test('MCP text layer: compact by default, JSON when format is json', async () =>
     await server.close();
   }
 });
+
+test('(c) index_status reports stale after HEAD changes and fresh after re-index', async (t) => {
+  if (!HAS_GIT) return t.skip('git not on PATH');
+  const repo = tmpDir('gr-status-');
+  git(repo, 'init', '-q');
+  fs.writeFileSync(path.join(repo, 'a.js'), 'function a() { return 1; }\n');
+  git(repo, 'add', 'a.js');
+  git(repo, 'commit', '-q', '-m', 'first');
+  const { ctx } = makeCtx(fakeDb({ async run() { return [{ nodes: 1, files: 1 }]; } }));
+  await runTool(ctx, 'index_repository', { project: 'proj', root_path: repo });
+  const fresh = await runTool(ctx, 'index_status', { project: 'proj' });
+  assert.equal(fresh.stale, false);
+  assert.equal(fresh.index_sha, fresh.head_sha);
+  git(repo, 'commit', '-q', '--allow-empty', '-m', 'second');
+  const stale = await runTool(ctx, 'index_status', { project: 'proj' });
+  assert.equal(stale.stale, true);
+  assert.notEqual(stale.index_sha, stale.head_sha);
+  await runTool(ctx, 'index_repository', { project: 'proj', root_path: repo });
+  const again = await runTool(ctx, 'index_status', { project: 'proj' });
+  assert.equal(again.stale, false);
+});

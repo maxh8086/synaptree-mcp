@@ -10,17 +10,25 @@ import { DEFAULT_IGNORE_DIRS } from './constants.js';
 const MAX_BYTES = 1_000_000;
 export const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
 
-// Read-only walk: never writes into the repo being indexed.
+// Read-only walk: never writes into the repo being indexed. Ignore entries are either a bare directory
+// name (matched anywhere) or a root-relative path such as ".claude/worktrees". Directories holding a `.git`
+// *file* (linked worktrees, submodules) are separate checkouts and are skipped.
 export async function* walk(root, ignore = DEFAULT_IGNORE_DIRS) {
-  const skip = new Set(ignore.filter((i) => !i.includes('/')));
+  const names = new Set(ignore.filter((i) => !i.includes('/')));
+  const paths = new Set(ignore.filter((i) => i.includes('/')).map((i) => i.replace(/^\.?\/+|\/+$/g, '')));
   const stack = [root];
   while (stack.length) {
     const dir = stack.pop();
     let ents;
     try { ents = await fs.readdir(dir, { withFileTypes: true }); } catch { continue; }
+    if (dir !== root && ents.some((e) => e.name === '.git' && e.isFile())) continue;
     for (const e of ents) {
       const full = path.join(dir, e.name);
-      if (e.isDirectory()) { if (!skip.has(e.name)) stack.push(full); } else if (e.isFile() && langForFile(e.name)) yield full;
+      if (e.isDirectory()) {
+        if (names.has(e.name)) continue;
+        if (paths.size && paths.has(path.relative(root, full).split(path.sep).join('/'))) continue;
+        stack.push(full);
+      } else if (e.isFile() && langForFile(e.name)) yield full;
     }
   }
 }
@@ -90,5 +98,14 @@ export async function indexRepository(db, t, project, root, opts = {}) {
   const present = new Set(files.map((f) => f.rel));
   let removed = 0;
   for (const p of (await db.fileHashes(t)).keys()) if (!present.has(p)) { await db.deleteFile(t, p); removed++; }
+  // Folder nodes have no file_path, so drop the ones no surviving file lives under.
+  if (typeof db.pruneFolders === 'function') {
+    const keep = new Set([project]);
+    for (const rel of present) {
+      let acc = project;
+      for (const seg of rel.split('/').slice(0, -1)) keep.add((acc = `${acc}.${seg}`));
+    }
+    await db.pruneFolders(t, keep);
+  }
   return { ...stats, removed, files: files.length };
 }
