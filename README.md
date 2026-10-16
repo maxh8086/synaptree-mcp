@@ -6,6 +6,10 @@ links symbols across files, stores the result in Neo4j, and exposes it through a
 animated call-flow trace, architecture view, and database ERDs that are saved into the same graph so
 agents can see your schema next to your code.
 
+> **Syntax is no longer the bottleneck. Creativity is.**
+> I just shipped this project using solely AI coding agents, proof that impact is now defined by the depth of your thought and the clarity of your vision, not just writing lines of code.
+> I'd love your feedback on what I built: [linkedin.com/in/vpavtekar](https://linkedin.com/in/vpavtekar)
+
 **Read-only by design.** The MCP never changes your repository or your source databases. The only thing
 it writes is its own index (graph, annotations, ADRs, saved database schemas).
 
@@ -326,8 +330,6 @@ Apache License 2.0. See [LICENSE](LICENSE).
 
 ## Support
 
-If synaptree-mcp saves you $tokens, you can [buy me a coffee](https://buymeacoffee.com/maxh8086).
+I provide the vibes, the agents provide the code, and hopefully, you provide the coffee. ☕ Keep the local LLMs humming and my prompt-typing fingers caffeinated right here: https://buymeacoffee.com/maxh8086
 
 <a href="https://buymeacoffee.com/maxh8086"><img src="docs/buymeacoffee-qr.png" alt="Buy Me a Coffee QR code" width="220"></a>
-
-https://buymeacoffee.com/maxh8086
