@@ -6,7 +6,13 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const composeFile = process.env.SYNAPTREE_COMPOSE_FILE || path.resolve(here, '..', 'docker-compose.yml');
-const container = process.env.SYNAPTREE_CONTAINER || 'synaptree-synaptree-1';
+export function resolveContainer(file, { env = process.env, run = spawnSync } = {}) {
+  if (env.SYNAPTREE_CONTAINER) return env.SYNAPTREE_CONTAINER;
+  const r = run('docker', ['compose', '-f', file, 'ps', '-q', 'synaptree'], { encoding: 'utf8' });
+  const id = String(r.stdout || '').split(/\r?\n/).map((s) => s.trim()).find(Boolean);
+  if (!id) throw new Error('no running synaptree container found by compose service label');
+  return id;
+}
 const leaseDir = process.env.SYNAPTREE_LEASE_DIR || path.join(os.tmpdir(), 'synaptree-leases');
 const upAttempts = Number(process.env.SYNAPTREE_UP_ATTEMPTS) || 3;
 const upRetryMs = Number(process.env.SYNAPTREE_UP_RETRY_MS) || 5000;
@@ -197,6 +203,14 @@ function main() {
   composeUp(1);
 
   function startBridge() {
+    let container;
+    try {
+      container = resolveContainer(composeFile);
+    } catch (err) {
+      process.stderr.write('launcher: ' + err.message + '\n');
+      try { fs.rmSync(leaseFile, { force: true }); } catch { /* ignore */ }
+      process.exit(1);
+    }
     child = spawn('docker', ['exec', '-i', container, 'node', 'src/cli.js', '--stdio'], {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
