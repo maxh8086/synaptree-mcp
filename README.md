@@ -82,6 +82,8 @@ SYNAPTREE_SUMMARIZE_LIMIT      25                       Max symbols summarised p
 SYNAPTREE_IGNORE              (none)                   Extra ignore entries, comma separated (see below)
 SYNAPTREE_PROJECT             folder basename          Project name the EGM watcher writes under (see EGM linkup)
 SYNAPTREE_WATCH               on                       Set to 0 to disable the docs/designs watcher
+EGM_PLUGIN_PATH               (auto: newest cache)     EGM plugin root for setup-egm-bridge (see EGM linkup)
+SYNAPTREE_EGM_BRIDGE          on                       Set to 0 to skip writing the data-access block into EGM
 EMBEDDINGS_URL / _API_KEY      (none)                   Optional embeddings endpoint
 EMBEDDINGS_MODEL               text-embedding-3-small   Embedding model name
 WORKSPACE_DIR (compose)        (set in .env)            Host folder mounted read-only at /workspace
@@ -204,9 +206,46 @@ SSE clients connect to `http://127.0.0.1:8787/sse`. Set `SYNAPTREE_TOKEN` to req
 Every tool takes a `project` argument. If a gateway injects the project name for you, index your
 checkout under that same name (the checkout folder slug).
 
-### EGM linkup
+### EGM linkup (new in 1.1.1)
 
-The [Elephant-Goldfish Model](https://github.com/google/elephant-goldfish-model) (EGM) writes planning artifacts as Markdown under `docs/designs/`. When the server starts (`serve` or `--stdio`), it watches that folder in the background, so new and changed designs appear in the graph without running `index_repository`.
+The [Elephant-Goldfish Model](https://github.com/google/elephant-goldfish-model) (EGM) writes planning artifacts as Markdown under `docs/designs/`. This integration is new in 1.1.1. When the server starts (`serve` or `--stdio`), it watches that folder in the background, so new and changed designs appear in the graph without running `index_repository`. It has two parts: the docs watcher, and a bridge that lets EGM's agents query `synaptree`.
+
+**How it works**
+
+1. **Design docs are written.** EGM (or you) saves a `.md` file under `docs/designs/` in the repo.
+2. **The watcher picks it up.** After the file is stable for 1 s, it is indexed as a `File` node with one `Resource` node per heading, under the project name below.
+3. **The plugin bridge lets EGM read the graph.** `scripts/setup-egm-bridge.js` appends a short "data access" block to the EGM skill prompts (`skills/egm_review`, `skills/egm_brainstorm`) and every `agents/*.md`. The block tells those agents they may call the `synaptree` MCP server to locate files before reporting a path as missing. It runs automatically each time the server starts, so there is no manual step. If the EGM plugin is installed, the block is applied, and it is applied again after EGM updates to a new cached version. Files that already contain the block are skipped, so it is safe to repeat. Set `SYNAPTREE_EGM_BRIDGE=0` to turn it off.
+4. **Queries see the docs.** Because the docs and the code share one project name, `search_graph`, `trace_path` and `ask_flow` can answer questions across both.
+
+**Where the bridge finds EGM**, in order:
+
+1. `EGM_PLUGIN_PATH`, if set. Always used, even with `--no-auto`.
+2. Otherwise, the newest version under `%USERPROFILE%\.claude\plugins\cache\egm\egm\` (or `$HOME/.claude/plugins/cache/egm/egm/` elsewhere). The npm install and build hooks pass `--no-auto`, so they only write when `EGM_PLUGIN_PATH` is set. To patch the cache, run `node scripts/setup-egm-bridge.js` by hand.
+
+If no EGM plugin is found, the script logs where it looked and changes nothing.
+
+**Variables to declare**
+
+You need no new variables for the default setup: the repo folder is the project name, and you start the server from the repo root. Declare a variable only in these cases:
+
+| Variable | Declare it when | Example |
+| --- | --- | --- |
+| `SYNAPTREE_PROJECT` | The name you indexed under differs from the folder name, for example you indexed `market-scanner` but the folder is `Market-Scanner`. | `SYNAPTREE_PROJECT=market-scanner` |
+| `EGM_PLUGIN_PATH` | EGM is not in the default cache location, or you want the bridge applied at install time. | `EGM_PLUGIN_PATH=C:\Users\me\Downloads\Projects\elephant-goldfish-model` |
+| `SYNAPTREE_WATCH` | You do not want the docs watcher to run. Set it to `0`. | `SYNAPTREE_WATCH=0` |
+| `SYNAPTREE_EGM_BRIDGE` | You do not want the server to write the data-access block into EGM. Set it to `0`. | `SYNAPTREE_EGM_BRIDGE=0` |
+
+Set each variable in one place only (see the precedence note below).
+
+**Example: a repo that lives in its own folder**
+
+For a repo at `C:\Users\me\Downloads\Projects\Market-Scanner` that keeps its EGM docs in `docs/designs/`:
+
+1. Index it once with `index_repository` (project `Market-Scanner`).
+2. Start the server from that folder, so the watcher reads its `docs/designs/`.
+3. Check `index_status`. If the project name is not `Market-Scanner`, set `SYNAPTREE_PROJECT` as shown above.
+
+Nothing to run for the bridge: starting the server applies it. If EGM is installed somewhere other than the default cache, set `EGM_PLUGIN_PATH`.
 
 - **What is indexed**: each `.md` file becomes a `File` node, and each ATX heading (`#` to `######`) becomes a `Resource` node. A heading's span runs to the next heading. Headings inside fenced code blocks are ignored.
 - **Timing**: a file is read only after the writer releases it (1000 ms stability window, polled every 100 ms), so partial writes are never indexed.

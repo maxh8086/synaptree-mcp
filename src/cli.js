@@ -10,6 +10,7 @@ import { Llm } from './llm.js';
 import { createMcpServer } from './mcp.js';
 import { createApp } from './server.js';
 import { startDesignWatcher } from './watcher.js';
+import { setupEgmBridge } from '../scripts/setup-egm-bridge.js';
 
 // The project's own .env is authoritative for its NEO4J_* / SYNAPTREE_* keys, so a host process (e.g. an agent
 // gateway that spawns us over stdio) cannot point us at someone else's database through inherited variables.
@@ -29,9 +30,18 @@ async function boot() {
 
 const mode = process.argv[2] === '--stdio' ? 'stdio' : process.argv[2] ?? 'serve';
 
+// Injects the synaptree data-access block into the EGM plugin on every server start, so the bridge is applied
+// without a manual step and is re-applied after the plugin cache gets a new version. Idempotent: files that
+// already carry the block are skipped. Disable with SYNAPTREE_EGM_BRIDGE=0. Never throws.
+function applyEgmBridge() {
+  if (process.env.SYNAPTREE_EGM_BRIDGE === '0') return;
+  setupEgmBridge({ auto: true }).catch((err) => console.error(`[synaptree-egm-bridge] skipped: ${err.message}`));
+}
+
 // Background EGM artifact sync: docs/designs/*.md under the working directory are kept in the graph as they change.
 // Disable with SYNAPTREE_WATCH=0. Logs go to stderr so stdio transport output stays clean.
 function startBackgroundWatch(ctx) {
+  applyEgmBridge();
   if (process.env.SYNAPTREE_WATCH === '0') return null;
   try {
     return startDesignWatcher(ctx, { root: process.cwd() });
