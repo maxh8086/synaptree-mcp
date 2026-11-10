@@ -1,6 +1,6 @@
 {
   "name": "synaptree-mcp",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "Multi-tenant code knowledge graph on Neo4j with a Tree-sitter indexer, heuristic cross-file linker and an MCP server (stdio + SSE).",
   "type": "module",
   "main": "src/server.js",
