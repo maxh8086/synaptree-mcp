@@ -12,6 +12,8 @@ ENV NODE_ENV=production
 ENV HOST=0.0.0.0
 WORKDIR /app
 COPY package*.json ./
+# postinstall runs scripts/setup-egm-bridge.js, so the script must exist before npm ci.
+COPY scripts/setup-egm-bridge.js ./scripts/
 RUN apk add --no-cache unixodbc git && npm ci --omit=dev
 COPY src/ ./src/
 COPY client/ ./client/

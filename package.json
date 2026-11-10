@@ -1,6 +1,6 @@
 {
   "name": "synaptree-mcp",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Multi-tenant code knowledge graph on Neo4j with a Tree-sitter indexer, heuristic cross-file linker and an MCP server (stdio + SSE).",
   "type": "module",
   "main": "src/server.js",
@@ -15,7 +15,10 @@
     "test": "node --test tests/unit/*.test.js",
     "test:unit": "node --test tests/unit/*.test.js",
     "init-env": "node scripts/init-env.mjs",
-    "build:client": "node scripts/build-client.mjs"
+    "build:client": "node scripts/build-client.mjs",
+    "build": "npm run build:client",
+    "postbuild": "node scripts/setup-egm-bridge.js",
+    "postinstall": "node scripts/setup-egm-bridge.js"
   },
   "engines": {
     "node": ">=20"

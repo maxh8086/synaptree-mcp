@@ -3,7 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { langForFile } from './langs.js';
 import { parseSource } from './parser.js';
-import { extractTree, extractLite, extractResource } from './extract.js';
+import { extractTree, extractLite, extractResource, extractMarkdown } from './extract.js';
 import { buildFile, linkRefs, NameIndex, resolveImports } from './linker.js';
 import { DEFAULT_IGNORE_DIRS } from './constants.js';
 
@@ -40,6 +40,7 @@ const SHELL_LITE = { lite: [
 export async function extractSource(filePath, source, grammarsDir) {
   const cfg = langForFile(filePath);
   if (!cfg) return null;
+  if (cfg.id === 'markdown') return extractMarkdown(source);
   if (cfg.lite) return extractLite(source, cfg);
   if (cfg.resource) return extractResource(source, cfg);
   let tree;
