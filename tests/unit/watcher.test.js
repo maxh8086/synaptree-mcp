@@ -96,6 +96,16 @@ test('events are applied one at a time, and a failure does not stop the queue', 
   assert.match(logs[0], /boom/);
 });
 
+test('extractMarkdown handles CRLF line endings', () => {
+  const src = '# Plan\r\n\r\n## Goals\r\nbody\r\n';
+  const out = extractMarkdown(src);
+  assert.deepEqual(out.symbols.map((s) => [s.name, s.start, s.end]), [
+    ['Plan', 1, 2],
+    ['Goals', 3, 5],
+  ]);
+  assert.equal(out.symbols[0].signature, '# Plan');
+});
+
 test('extractMarkdown maps headings to Resource spans and ignores fenced code', () => {
   const src = ['# Title', 'intro', '## Goals', '```', '# not a heading', '```', '### Deep', 'end'].join('\n');
   const out = extractMarkdown(src);
