@@ -294,6 +294,34 @@ export function extractLite(source, cfg) {
   return out;
 }
 
+// Markdown: one Resource per ATX heading (# .. ######). A heading's span runs to the next heading of any level,
+// so the file's sections are addressable by name. Headings inside fenced code blocks are ignored.
+export function extractMarkdown(source) {
+  const out = { symbols: [], imports: [], refs: [], routes: [] };
+  const lines = source.split('\n');
+  let fence = null;
+  const heads = [];
+  lines.forEach((line, i) => {
+    const fm = line.match(/^\s*(`{3,}|~{3,})/);
+    if (fm) {
+      if (!fence) fence = fm[1][0].repeat(fm[1].length);
+      else if (fm[1][0] === fence[0] && fm[1].length >= fence.length) fence = null;
+      return;
+    }
+    if (fence) return;
+    const hm = line.match(/^ {0,3}(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$/);
+    if (hm) heads.push({ line: i + 1, level: hm[1].length, text: hm[2].trim() });
+  });
+  heads.forEach((h, k) => {
+    const end = k + 1 < heads.length ? heads[k + 1].line - 1 : lines.length;
+    out.symbols.push({
+      name: clip(h.text, 120), kind: 'Resource', start: h.line, end: Math.max(h.line, end),
+      parent: -1, owner: null, doc: '', signature: clip(`${'#'.repeat(h.level)} ${h.text}`),
+    });
+  });
+  return out;
+}
+
 // Config/schema files: one Resource per top-level key.
 export function extractResource(source, cfg) {
   const out = { symbols: [], imports: [], refs: [], routes: [] };

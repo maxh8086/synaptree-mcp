@@ -80,6 +80,8 @@ SYNAPTREE_GRAMMARS_DIR         (none)                   Extra tree-sitter-<name>
 SYNAPTREE_SUMMARIZE_ON_INDEX   off                      Local LLM writes summaries after indexing
 SYNAPTREE_SUMMARIZE_LIMIT      25                       Max symbols summarised per run
 SYNAPTREE_IGNORE              (none)                   Extra ignore entries, comma separated (see below)
+SYNAPTREE_PROJECT             folder basename          Project name the EGM watcher writes under (see EGM linkup)
+SYNAPTREE_WATCH               on                       Set to 0 to disable the docs/designs watcher
 EMBEDDINGS_URL / _API_KEY      (none)                   Optional embeddings endpoint
 EMBEDDINGS_MODEL               text-embedding-3-small   Embedding model name
 WORKSPACE_DIR (compose)        (set in .env)            Host folder mounted read-only at /workspace
@@ -202,6 +204,51 @@ SSE clients connect to `http://127.0.0.1:8787/sse`. Set `SYNAPTREE_TOKEN` to req
 Every tool takes a `project` argument. If a gateway injects the project name for you, index your
 checkout under that same name (the checkout folder slug).
 
+### EGM linkup
+
+The [Elephant-Goldfish Model](https://github.com/google/elephant-goldfish-model) (EGM) writes planning artifacts as Markdown under `docs/designs/`. When the server starts (`serve` or `--stdio`), it watches that folder in the background, so new and changed designs appear in the graph without running `index_repository`.
+
+- **What is indexed**: each `.md` file becomes a `File` node, and each ATX heading (`#` to `######`) becomes a `Resource` node. A heading's span runs to the next heading. Headings inside fenced code blocks are ignored.
+- **Timing**: a file is read only after the writer releases it (1000 ms stability window, polled every 100 ms), so partial writes are never indexed.
+- **Deletes**: removing a file deletes its `File` node and its heading nodes, and prunes Folder nodes that no longer hold files.
+- **Startup**: the watcher does not index existing files. Run `index_repository` once for the initial state.
+- **Opt out**: `SYNAPTREE_WATCH=0`.
+
+**Where it watches**: the watcher uses the server's working directory, so start the server from the root of the repo whose `docs/designs/` you want. A server started from another folder watches that folder's `docs/designs/`, or nothing if it has none.
+
+**Project name**: the watcher writes under the same project name `index_repository` uses. If the two names differ, the docs end up in a separate project and queries on your code project will not see them. The name is chosen in this order:
+
+1. `SYNAPTREE_PROJECT`, if set.
+2. The basename of the working directory (`C:\dev\my-app` becomes `my-app`).
+
+**When to set `SYNAPTREE_PROJECT`**:
+
+- The folder name differs from the name you indexed under (you indexed the repo as `synaptree`, but the folder is `synaptree-mcp`).
+- The server runs in a different working directory from the repo, for example a stdio host that starts it from its own folder.
+
+**How to set it**:
+
+- **Host install (`claude mcp add` or `codex mcp add`)**: pass it as an environment variable when adding the server. The working directory is then the folder the client starts in, so start the client from the repo root.
+
+  ```bash
+  claude mcp add -e SYNAPTREE_PROJECT=my-app synaptree -- node /path/to/synaptree-mcp/src/cli.js --stdio
+  ```
+
+- **`npm start` from the server checkout**: export it in the shell before starting, or put it in the server's own `.env`.
+
+  ```bash
+  SYNAPTREE_PROJECT=my-app npm start
+  ```
+
+  ```bash
+  # PowerShell
+  $env:SYNAPTREE_PROJECT = "my-app"; npm start
+  ```
+
+- **Docker**: add it to the `environment:` block of the `synaptree` service in `docker-compose.yml`, or to the `.env` next to it. Inside the container the working directory is the server's own folder, not your repo, so the watcher cannot see your `docs/designs/` through a container unless the server is started there. Run the host install if you want EGM linkup for a repo on your machine.
+
+**Precedence**: `.env` is authoritative for `SYNAPTREE_*` keys. If `SYNAPTREE_PROJECT` is set in the server's `.env`, it overrides a value set in your shell or in `claude mcp add -e`. Set it in one place only.
+
 ### Keep it in sync
 
 Run `synaptree-client` next to your code. It watches the folder and posts changed files to
@@ -316,6 +363,7 @@ UI shows demo data                             Open /ui/ (with the trailing slas
 Graph looks stale after a commit               Run index_repository, or enable the git hooks above
 Tools return 401                               Send Authorization: Bearer <SYNAPTREE_TOKEN>
 Cannot connect to Neo4j                        docker compose up -d; Bolt is on 17687, not 7687
+EGM docs missing from the graph                Check the project name (SYNAPTREE_PROJECT) matches index_repository, and that the server started in the repo root
 ```
 
 ## Tests

@@ -276,7 +276,7 @@ export function buildTools() {
         const rel = path.relative(root, full).split(path.sep).join('/');
         seen.add(rel);
         const h = known.get(rel);
-        if (h === undefined) { if (langForFile(rel) && !/\.(md|markdown)$/i.test(rel)) added.push(rel); } // markdown has no extractor, so it is never hashed
+        if (h === undefined) { if (langForFile(rel)) added.push(rel); }
         else if (sha256(await fs.readFile(full, 'utf8')) !== h) modified.push(rel);
       }
       const removed = [...known.keys()].filter((k) => !seen.has(k));
