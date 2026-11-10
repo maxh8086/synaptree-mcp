@@ -298,7 +298,7 @@ export function extractLite(source, cfg) {
 // so the file's sections are addressable by name. Headings inside fenced code blocks are ignored.
 export function extractMarkdown(source) {
   const out = { symbols: [], imports: [], refs: [], routes: [] };
-  const lines = source.split('\n');
+  const lines = source.split(/\r?\n/);
   let fence = null;
   const heads = [];
   lines.forEach((line, i) => {
