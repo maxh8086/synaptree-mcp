@@ -13,6 +13,23 @@ agents can see your schema next to your code.
 **Read-only by design.** The MCP never changes your repository or your source databases. The only thing
 it writes is its own index (graph, annotations, ADRs, saved database schemas).
 
+## What's new
+
+Changes under Unreleased in [CHANGELOG.md](CHANGELOG.md).
+
+| Feature | What it does | Benefit |
+| --- | --- | --- |
+| Orphan gate, decision scope and doc-to-decision links | Blocks entering `implementation` while a decision is PENDING, a doc is unlinked or `needs_review`, a doc-scoped decision has no linked doc, or a leaf doc has no ledger tasks. | Loose ends are caught before implementation starts. |
+| `get_scoped_node` | Returns one doc, task or decision with its direct constraints and the project-wide decisions, capped at about 12 KB. | A subagent gets only the context it needs, not the whole plan. |
+| `claim_task` and ledger claims | Gives a task to one agent for a lease (default 15 minutes). `manage_ledger` `force: true` with a `reason` overrides ownership and writes an audited `ledger_forced` event. | Cooperating agents do not work the same task, and overrides leave a record. |
+| `finish_project` completion lock | Runs the same check as `set_phase` to `complete` and returns every failing reason at once (`finish_blocked`). | All blockers show in one response instead of one per attempt. |
+| Store locking | Writes take `store.lock`, reload the store under it and save through a temp file and rename. A corrupt `store.json` returns 503 `store_unreadable`. | Concurrent processes on one machine do not overwrite each other, and a corrupt store is never replaced by an empty one. |
+| Fixed-order HUD status line | The status line always lists its fields in the same order, starting with `phase=`, `pending=` and `needs_review=`. | Each field is in the same place every time, so it is quick to scan. |
+
+Details, limits and error codes are in [Guardrails](#guardrails-decisions-doc-links-phase-gate-ledger).
+
+These guardrails are advisory: synaptree sees tool calls only, so it cannot stop file edits or read the agent's prose.
+
 ## Benchmark
 
 Retrieving code through the graph used 4,953 tokens against 52,140 for `git grep` plus line-window reads across 16 tasks (90% fewer). Per-task charts, table and method: [Benchmark/README.md](Benchmark/README.md).
@@ -122,6 +139,12 @@ database schema (SQL and NoSQL), so the agent also knows which tables a piece of
 - **Scales and isolates:** the graph lives in Neo4j and is partitioned per user and repository.
 - **Token guardrails for paid sources:** asks sent to a paid remote API (Claude, Codex or similar) are estimated first, and large asks need approval. Local LLMs and annotation-generating calls are never gated. Limits are editable in Settings.
 - **Works with any MCP client:** stdio for local agents, SSE for remote or shared setups.
+- **Scoped context for subagents:** `get_scoped_node` returns one doc, task or decision with its direct constraints (its own decisions and its parent's) and the project-wide decisions, capped at about 12 KB, so a subagent does not need the whole plan in its context.
+- **No double work between agents:** `claim_task` gives a task to one agent for a lease (default 15 minutes). A second agent gets 409 `claimed` until the lease expires. This coordinates cooperating agents; it is not authentication.
+- **A gate that catches loose ends:** moving to `implementation` is blocked while a decision is PENDING, a doc is unlinked or `needs_review`, a doc-scoped decision no doc references, or a leaf doc that is not done has no ledger tasks (reference, note and research docs are exempt).
+- **A completion check that cannot be skipped by accident:** `finish_project` and `set_phase` with `complete` run the same check and return every failing reason at once (`finish_blocked`), not just the first.
+- **A store that survives concurrent writers:** writes take a `store.lock`, reload under the lock and save through a temp file and rename. A corrupt `store.json` returns 503 `store_unreadable` and is never replaced by an empty store.
+- **An audit trail:** overrides, reopenings and refused completions are recorded (`ledger_forced`, `doc_reopened`, `finish_blocked`).
 
 ## Architecture
 
@@ -430,6 +453,7 @@ age is taken over. `SYNAPTREE_LOCK_TIMEOUT_MS` (default 5000) sets how long a wr
 (default 10000) sets the stale age. A corrupt `store.json` returns 503 `store_unreadable` and is never
 replaced by an empty store. The retriable 503 codes are `lock_timeout`, `lock_lost` and `store_unreadable`
 (`retry: true`). A 503 means nothing was written, so the call is safe to repeat.
+
 ### What this does not do
 
 - synaptree only sees tool calls. It cannot read the agent's prose and cannot stop file edits. The gate
