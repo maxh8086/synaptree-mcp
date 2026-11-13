@@ -360,6 +360,96 @@ Databases (read-only): `erd_list_connections`, `erd_save_connection`, `erd_delet
 are sampled and depth/field-limited, and are reported as truncated when limits apply. Only names,
 types and flags are stored, never row values.
 
+## Guardrails: decisions, doc links, phase gate, ledger
+
+Four advisory guardrails for agents using synaptree. State is stored per project in synaptree's own
+store (`store.json`), never in your repository. There are no `manifest.yaml` or `execution-ledger.json`
+files.
+
+| Tool | Purpose |
+| --- | --- |
+| `record_decision` | Records a decision as PENDING, DECIDED or REJECTED. DECIDED needs a summary of 20+ characters. REJECTED, or reopening a decision, needs a reason. |
+| `set_phase` | Sets the phase: `brainstorm`, `planning`, `goldfish_review`, `implementation` or `complete`. Moving forward into `goldfish_review` or `implementation` is blocked with a 409 `gate_blocked` while any decision is PENDING or any doc is `needs_review`. Moving backward is never blocked. |
+| `create_doc` | Registers a doc. Uses an explicit `parent`, or a word-overlap suggestion. The suggestion auto-links only when at least 3 docs exist, the best score is >= 0.35 and it beats the runner-up by >= 0.10. Otherwise the doc attaches to the first doc and is marked `needs_review`. |
+| `link_doc` | Sets a parent explicitly, clears `needs_review`, and rejects cycles. |
+| `manage_ledger` | Adds, updates and lists tasks per doc. Task states: TODO, IN_PROGRESS, COMPLETED. |
+| `complete_doc` | Returns 409 `incomplete` (listing the remaining tasks) or 409 `empty_ledger` until every task of that doc is COMPLETED. |
+| `guardrail_status` | Read-only snapshot of the phase, decisions, docs and ledger. |
+| `get_scoped_node` | Read-only. Takes `node_id` `K#` (doc), `T#` (task) or `D#` (decision) and returns it with its direct constraints (its own decisions and its parent's), project-wide decisions, tasks and children. Output is capped at about 12 KB. |
+| `claim_task` | Claims a task for `agent_id` with a lease (`lease_seconds`, 30 to 3600, default 900). The same agent renews; an expired lease can be reclaimed. A live lease held by another agent returns 409 `claimed`. |
+| `finish_project` | Closes the project by moving it to the `complete` phase. Refuses with 409 `finish_blocked` (see below). |
+
+`set_phase` also accepts `complete`. Mutations are refused with 409 `project_complete` once the project is complete, except `set_phase`.
+
+**The status line (HUD).** Tools that take a `project` add one line as a second content block of the
+MCP response, once that project has guardrail state.
+
+- The line always starts with `phase=`, `pending=` and `needs_review=`.
+  In `implementation` and `complete` it also shows ledger progress with a 10-character bar.
+- In other phases it appears only when something is PENDING, `needs_review` or an orphan.
+- It is not added to REST responses, to `guardrail_status`, or to tools without a `project`.
+- It is not counted in the token-savings figures.
+
+**Decision scope and the orphan gate.** A decision has a `scope`: `doc` (the default for new decisions) or
+`project` (applies everywhere, never an orphan). `record_decision` takes `applies_to` (doc ids), `create_doc`
+takes `decisions`, and `link_doc` takes `decisions` and `remove_decisions`. A decision or doc can hold at
+most 20 links. Decisions recorded before this change have no stored scope and count as `project`. Updating a
+decision keeps its scope unless you pass one.
+
+- `orphan_decisions`: a DECIDED, doc-scoped decision that no doc references.
+- `unmanifested_docs`: a leaf doc with no ledger tasks, not `done`, and a kind other than `reference`, `note`
+  or `research` (compared case-insensitively).
+
+`gate_blocked` blockers have four keys: `pending_decisions`, `unlinked_docs`, `orphan_decisions` and
+`unmanifested_docs`. Entering `goldfish_review` checks the first three. Entering `implementation` checks all
+four. `link_doc` now takes an optional `parent`, but at least one of `parent`, `decisions` or `remove_decisions`
+is required. A call without `parent` never clears `needs_review`.
+
+**Completion.** `finish_project` and `set_phase` with `complete` both run the same check. It returns 409
+`finish_blocked` with a `reasons` list (all failures, not just the first). The reason codes are `wrong_phase`,
+`empty_ledger`, `incomplete` (up to 20 items), `docs_not_done` and `gate_blocked`. `complete_doc` must be
+called for each doc that has tasks. Completing one doc is never blocked by another doc. Changing a task in a
+`done` doc reopens that doc (`doc_reopened`). Moving back from `complete` to `implementation` is allowed, and
+the next finish re-runs the check.
+
+**Ledger and claims.** `manage_ledger` status accepts `TODO`, `IN_PROGRESS`, `COMPLETED` and the markers
+`[ ]`, `[/]`, `[x]`. Results include a `marker` field. In the `implementation` phase, setting `IN_PROGRESS`
+requires `agent_id` (400 `agent_id_required`). A task with a live lease can move to `COMPLETED` or `TODO` only
+for its claimant (409 `claimed_by_other`). After a lease expires, anyone can release the task. `force: true`
+with a `reason` overrides ownership and writes a `ledger_forced` audit event. `agent_id` is self-asserted and
+advisory: it is a coordination label, not authentication, and anyone can pass any id.
+
+**HUD fragments.** The status line is built in one fixed order: `phase=... | pending=N | needs_review=N | ledger n/n bar
+| in_progress=N | stale=M | orphans=N`. The ledger fragment appears only in `implementation` and `complete`.
+`in_progress` and `stale` appear only in `implementation`. `in_progress`, `stale` and `orphans` appear only
+when their count is above zero.
+
+**Store locking.** Writes from different processes on the same machine are serialized by a lock file,
+`store.lock`, in the data directory. Each write reloads the store under the lock. A lock older than the stale
+age is taken over. `SYNAPTREE_LOCK_TIMEOUT_MS` (default 5000) sets how long a write waits. `SYNAPTREE_LOCK_STALE_MS`
+(default 10000) sets the stale age. A corrupt `store.json` returns 503 `store_unreadable` and is never
+replaced by an empty store. The retriable 503 codes are `lock_timeout`, `lock_lost` and `store_unreadable`
+(`retry: true`). A 503 means nothing was written, so the call is safe to repeat.
+### What this does not do
+
+- synaptree only sees tool calls. It cannot read the agent's prose and cannot stop file edits. The gate
+  blocks only its own `set_phase` and `complete_doc` calls.
+- Only decisions the agent records are tracked.
+- The gate checks that records exist, not that they are true.
+- Phase is per project and shared by every agent using that project.
+- Processes on one machine may share a data directory; writes are serialized by `store.lock`. Sharing a data
+  directory across hosts or over network filesystems is unsupported.
+- A project with no indexed content cannot be cleared with `delete_project`, so its guardrail state
+  stays until the project is indexed and then deleted.
+- Word-overlap linking is a suggestion. Check the returned score.
+- The store lock covers one machine with local disk. Its atomic file creation (`O_EXCL`) is not
+  supported on network filesystems without it (for example NFSv2). Multiple replicas sharing one data volume
+  are not supported; they need a database-backed store. Locking on Docker Desktop bind mounts is not verified.
+  The tests cover local disk only.
+- `agent_id` is advisory (see "Ledger and claims"). Claims coordinate cooperating agents; they do not stop others.
+
+**Caps per project:** 200 docs, 500 tasks, 100 decisions. Doc content is cut to 4 KB.
+
 ## Accuracy: linking is heuristic
 
 Cross-file linking is **not** a full language server. The "Hybrid LST/LSP" pass is Tree-sitter
