@@ -15,6 +15,7 @@ import { DEFAULT_SYSTEM_PROMPT, renderPrompt } from './prompt.js';
 import { ERD_SYSTEM_PROMPT, buildPrompt, applyEnrichment } from './erd-ai.js';
 import { modelToGraph, digest, SCHEMA_ROOT } from './schema-graph.js';
 import { ErdError, parseDdl, introspect, toMermaid, toCsv, publicConnection } from './erd.js';
+import { GuardError, mutate, getState, status, recordDecision, setPhase, createDoc, linkDoc, ledger, completeDoc, scopedNode, enforceImplementationProgress, claimTask } from './guardrails.js';
 
 export class HttpError extends Error {
   constructor(status, message, extra = {}) { super(message); this.status = status; this.extra = extra; }
@@ -26,7 +27,22 @@ const DELETE_PHRASE = 'yes, delete my repo';
 const WRITE_WORDS = /\b(CREATE|MERGE|DELETE|DETACH|SET|REMOVE|DROP|LOAD\s+CSV|FOREACH|CALL)\b/i;
 const tenant = (ctx, project) => ({ user_id: ctx.tenant.user_id, repo_name: project });
 const pkey = (ctx, project) => `${ctx.tenant.user_id}/${project}`;
+
+// Audits a claimTask result. Renewals are routine heartbeats and are not audited.
+const auditClaim = (ctx, project, claim) => {
+  if (!claim || claim.renewed) return;
+  const user = ctx.tenant.user_id;
+  if (claim.reclaimed) {
+    ctx.store.audit({ event: 'task_reclaimed', user, project, task: claim.task.id, agent: claim.task.claimed_by, previous_agent: claim.previous_agent });
+  } else {
+    ctx.store.audit({ event: 'task_claimed', user, project, task: claim.task.id, agent: claim.task.claimed_by });
+  }
+};
 const project = z.string().min(1).describe('Project (repo) name');
+// Turn guardrail errors into the HTTP-style errors every transport already reports.
+const guard = (fn) => async (ctx, a) => {
+  try { return await fn(ctx, a); } catch (e) { if (e instanceof GuardError) throw new HttpError(e.status, e.message, e.extra); throw e; }
+};
 
 // Per-project metadata kept in the synaptree store, never in the user's repo.
 const meta = (ctx, p) => ctx.store.get('projects', {})[pkey(ctx, p)] ?? {};
@@ -187,6 +203,7 @@ export function buildTools() {
       const removed = await ctx.db.purgeProject(t);
       ctx.store.update('projects', (all) => { delete all[pkey(ctx, a.project)]; return all; });
       ctx.store.update('annotations', (all) => { delete all[pkey(ctx, a.project)]; return all; });
+      ctx.store.update('guardrails', (all) => { delete all[pkey(ctx, a.project)]; return all; });
       ctx.store.audit({ event: 'delete_project', user: t.user_id, project: a.project, nodes: removed });
       return { deleted: true, nodes_removed: removed, scope: 'synaptree index only' };
     });
@@ -301,6 +318,107 @@ export function buildTools() {
       ctx.store.update('adrs', (x) => { x[key] ??= {}; if (a.action === 'set') x[key][a.id] = { title: a.title ?? a.id, content: a.content ?? '', updated: Date.now() }; else delete x[key][a.id]; return x; });
       return { ok: true };
     });
+
+  add('record_decision', 'Record or update a decision in the project decision log (PENDING, DECIDED or REJECTED).',
+    { project, id: z.string().optional(), title: z.string().optional(), state: z.enum(['PENDING', 'DECIDED', 'REJECTED']).optional(), summary: z.string().optional(), reason: z.string().optional(), scope: z.enum(['doc', 'project']).optional(), applies_to: z.array(z.string()).max(20).optional() },
+    guard(async (ctx, a) => {
+      let prev;
+      const out = mutate(ctx, a.project, (s) => {
+        prev = s.decisions?.[a.id]?.state;
+        return recordDecision(s, a);
+      });
+      if (prev && prev !== 'PENDING' && out.decision.state === 'PENDING') {
+        ctx.store.audit({ event: 'decision_reopened', user: ctx.tenant.user_id, project: a.project, decision: out.decision.id });
+      }
+      return out;
+    }));
+
+  add('set_phase', 'Set the project workflow phase. Moving to goldfish_review or implementation is blocked while decisions are PENDING or docs need review. Moving to complete runs the finish checks (same as finish_project). Moving back from complete to implementation reopens the project without a gate.',
+    { project, phase: z.enum(['brainstorm', 'planning', 'goldfish_review', 'implementation', 'complete']) },
+    guard(async (ctx, a) => {
+      try {
+        const out = mutate(ctx, a.project, (s) => setPhase(s, a));
+        if (out.previous !== out.phase) {
+          ctx.store.audit({ event: 'phase_changed', user: ctx.tenant.user_id, project: a.project, from: out.previous, to: out.phase });
+          if (out.phase === 'complete') ctx.store.audit({ event: 'project_finished', user: ctx.tenant.user_id, project: a.project, from: out.previous });
+        }
+        return out;
+      } catch (e) {
+        if (e instanceof GuardError && e.status === 409 && e.extra?.code === 'gate_blocked') {
+          ctx.store.audit({ event: 'gate_blocked', user: ctx.tenant.user_id, project: a.project, to: a.phase, blockers: e.extra.blockers });
+        }
+        if (e instanceof GuardError && e.status === 409 && e.extra?.code === 'finish_blocked') {
+          ctx.store.audit({ event: 'finish_blocked', user: ctx.tenant.user_id, project: a.project, to: a.phase, reasons: e.extra.reasons });
+        }
+        throw e;
+      }
+    }));
+
+  add('create_doc', 'Create a planning doc in the project doc tree. It is linked to the best-matching parent automatically, or flagged needs_review when the match is unclear.',
+    { project, title: z.string(), kind: z.string().optional(), content: z.string().optional(), parent: z.string().optional(), decisions: z.array(z.string()).max(20).optional() },
+    guard((ctx, a) => mutate(ctx, a.project, (s) => createDoc(s, a))));
+
+  add('link_doc', 'Set the parent of a doc and/or its decision links. At least one of parent, decisions or remove_decisions is required. Cycles and re-parenting the root are refused. A decisions-only call leaves the doc link state unchanged.',
+    { project, id: z.string(), parent: z.string().optional(), decisions: z.array(z.string()).max(20).optional(), remove_decisions: z.array(z.string()).max(20).optional() },
+    guard((ctx, a) => mutate(ctx, a.project, (s) => linkDoc(s, a))));
+
+  add('manage_ledger', 'Add tasks to a doc, update a task status, or list tasks in the project task ledger. Status accepts TODO, IN_PROGRESS, COMPLETED or the markers [ ], [/], [x]. Adding a task to a done doc, or moving a COMPLETED task to another status, reopens the doc (done becomes false). In implementation, IN_PROGRESS claims the task for agent_id (same rules as claim_task). A task with a live lease can be changed only by its claimant (matching agent_id). After a lease expires anyone may release it to TODO; only the claimant may mark it COMPLETED. force:true overrides ownership, requires reason, and is audited as ledger_forced. agent_id is self-asserted and advisory, not authentication.',
+    { project, action: z.enum(['add', 'update', 'list']), doc: z.string().optional(), tasks: z.array(z.object({ title: z.string() })).optional(), task: z.string().optional(), status: z.enum(['TODO', 'IN_PROGRESS', 'COMPLETED', '[ ]', '[/]', '[x]']).optional(), agent_id: z.string().optional().describe('Claimant id (advisory, not authentication)'), force: z.boolean().optional().describe('Orchestrator override of ownership checks; requires reason'), reason: z.string().optional().describe('Required with force:true') },
+    guard(async (ctx, a) => {
+      const { reopened, claim, forced, ...out } = a.action === 'list'
+        ? ledger(getState(ctx, a.project), a)
+        : mutate(ctx, a.project, (s) => ledger(s, a));
+      if (reopened) ctx.store.audit({ event: 'doc_reopened', user: ctx.tenant.user_id, project: a.project, doc: reopened });
+      auditClaim(ctx, a.project, claim);
+      if (forced) {
+        ctx.store.audit({ event: 'ledger_forced', user: ctx.tenant.user_id, project: a.project, task: forced.task, previous_owner: forced.previous_owner, reason: forced.reason });
+      }
+      return out;
+    }));
+
+  add('complete_doc', 'Mark a doc done. Refused while any of its ledger tasks are incomplete.',
+    { project, doc: z.string() },
+    guard(async (ctx, a) => {
+      const out = mutate(ctx, a.project, (s) => completeDoc(s, a));
+      ctx.store.audit({ event: 'doc_completed', user: ctx.tenant.user_id, project: a.project, doc: a.doc, progress: out.progress });
+      return out;
+    }));
+
+  add('claim_task', 'Claim an implementation-phase task for an agent, or renew your own lease. A live lease held by another agent returns 409 claimed. An expired lease held by another agent is reclaimed (audited as task_reclaimed). lease_seconds is 30 to 3600 (default 900). Leases are checked lazily when a call reads them; there is no background sweeper. agent_id is self-asserted and advisory, not authentication: any caller can pass any agent_id, so this coordinates cooperating agents and is not an access control.',
+    { project, task_id: z.string(), agent_id: z.string().describe('Self-asserted agent id, ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$. Advisory, not authentication.'), lease_seconds: z.number().int().min(30).max(3600).optional().describe('Lease length in seconds, 30 to 3600 (default 900)') },
+    guard(async (ctx, a) => {
+      const out = mutate(ctx, a.project, (s) => claimTask(s, a));
+      auditClaim(ctx, a.project, out);
+      return out;
+    }));
+
+  add('finish_project', 'Close the project: sets phase complete. Passes only in implementation when every ledger task is COMPLETED, every doc with tasks is done, and the implementation gate is clear. A refusal lists every failed reason (finish_blocked).',
+    { project },
+    guard(async (ctx, a) => {
+      try {
+        const out = mutate(ctx, a.project, (s) => {
+          const previous = s.phase;
+          enforceImplementationProgress(s);
+          s.phase = 'complete';
+          return { phase: 'complete', previous };
+        });
+        ctx.store.audit({ event: 'project_finished', user: ctx.tenant.user_id, project: a.project, from: out.previous });
+        return out;
+      } catch (e) {
+        if (e instanceof GuardError && e.status === 409 && e.extra?.code === 'finish_blocked') {
+          ctx.store.audit({ event: 'finish_blocked', user: ctx.tenant.user_id, project: a.project, to: 'complete', reasons: e.extra.reasons });
+        }
+        throw e;
+      }
+    }));
+
+  add('guardrail_status', 'Read the guardrail state for a project: phase, decisions, docs, ledger and counts. Read-only.',
+    { project },
+    guard(async (ctx, a) => status(getState(ctx, a.project))));
+
+  add('get_scoped_node', 'Read one guardrail node by id: a doc (K#), task (T#) or decision (D#), with its immediate parent, the decisions that constrain it (direct hops only), its tasks and children, and the project-wide decisions. Output is capped at about 12 KB; truncated reports each cut. Read-only: no audit event, no change.',
+    { project, node_id: z.string().describe('Guardrail node id: K<n> doc, T<n> task, D<n> decision'), max_content: z.number().int().min(0).max(4096).optional().describe('Max doc content characters (default 1500)') },
+    guard((ctx, a) => scopedNode(getState(ctx, a.project), a.node_id, { maxContent: a.max_content })));
 
   add('ingest_traces', 'Add runtime-observed CALLS edges to the index (index only; never touches the repo).',
     { project, edges: z.array(z.object({ from: z.string(), to: z.string(), count: z.number().optional() })).max(5000) },
